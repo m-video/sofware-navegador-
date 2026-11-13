@@ -1,4 +1,3 @@
-
 name: Build NOVA Browser APK
 
 on:
@@ -6,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - master
 
 jobs:
   build:
@@ -16,29 +16,46 @@ jobs:
       - name: Download source code
         uses: actions/checkout@v4
 
-      - name: Install Java 17
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Java 21
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: 'temurin'
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android components
         run: |
+          yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+      - name: Generate Android project from HTML
+        run: |
+          # Si pusiste index.html en la raiz, lo mueve automaticamente a www/
+          if [ ! -d "www" ]; then
+            mkdir -p www
+            cp *.html *.css *.js www/ 2>/dev/null || true
+          fi
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "NOVA Browser" "com.nova.browser" --web-dir www
+          npx cap add android
+          sed -i 's/<application/<application android:usesCleartextTraffic="true"/g' android/app/src/main/AndroidManifest.xml
 
       - name: Build NOVA APK
-        run: gradle assembleDebug
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-Browser-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
