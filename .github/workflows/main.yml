@@ -27,11 +27,9 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Prepare HTML and Convert to Android Project
+      - name: Prepare HTML and Convert to Native WebView Browser
         run: |
           mkdir -p www
-          
-          # Buscar cualquier archivo HTML en el repositorio y copiarlo a www/index.html
           if [ -f "index.html" ]; then
             cp index.html www/index.html
           elif [ ! -f "www/index.html" ]; then
@@ -39,52 +37,262 @@ jobs:
             if [ -n "$HTML_FILE" ]; then
               cp "$HTML_FILE" www/index.html
             else
-              # Si aun no subiste el HTML, genera NOVA Browser automaticamente para no fallar
-              cat << 'EOF' > www/index.html
-          <!DOCTYPE html>
-          <html lang="es">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>NOVA Browser</title>
-            <style>
-              * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
-              body { display: flex; flex-direction: column; height: 100vh; background: #11111b; color: #fff; }
-              .bar { display: flex; gap: 6px; padding: 8px; background: #181825; }
-              input { flex: 1; padding: 8px 12px; border-radius: 16px; border: 1px solid #313244; background: #1e1e2e; color: #fff; outline: none; }
-              button { padding: 8px 14px; border-radius: 16px; border: none; background: #89b4fa; color: #11111b; font-weight: bold; cursor: pointer; }
-              iframe { flex: 1; width: 100%; border: none; background: #fff; }
-            </style>
-          </head>
-          <body>
-            <div class="bar">
-              <button onclick="history.back()">&#8592;</button>
-              <input id="u" value="https://es.wikipedia.org" placeholder="URL o buscar...">
-              <button onclick="ir()">Ir</button>
-              <button onclick="window.location.href=document.getElementById('u').value">&#8599;</button>
-            </div>
-            <iframe id="f" src="https://es.wikipedia.org"></iframe>
-            <script>
-              function ir() {
-                let v = document.getElementById('u').value.trim();
-                if (!v.startsWith('http')) v = v.includes('.') ? 'https://' + v : 'https://www.bing.com/search?q=' + encodeURIComponent(v);
-                document.getElementById('u').value = v;
-                document.getElementById('f').src = v;
-              }
-            </script>
-          </body>
-          </html>
-          EOF
+              echo '<html><body style="background:#11111b;color:#fff;text-align:center;padding-top:20%;font-family:sans-serif;"><h1>NOVA Browser</h1><p><a style="color:#89b4fa;font-size:22px;" href="https://www.youtube.com">Abrir YouTube</a></p></body></html>' > www/index.html
             fi
           fi
 
-          # Inicializar Capacitor limpiamente
           rm -rf node_modules package.json package-lock.json capacitor.config.* android
           npm init -y
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
           npx cap init "NOVA Browser" "com.nova.browser" --web-dir www
           npx cap add android
-          sed -i 's/<application/<application android:usesCleartextTraffic="true"/g' android/app/src/main/AndroidManifest.xml
+
+          # Copiar el HTML dentro de los assets nativos de Android
+          mkdir -p android/app/src/main/assets/www
+          cp -r www/* android/app/src/main/assets/www/
+
+          # Habilitar permisos de internet, aceleracion por hardware y trafico HTTP/HTTPS
+          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/g' android/app/src/main/AndroidManifest.xml
+
+          # Reemplazar MainActivity por un motor de navegador nativo sin iframes (Soporta YouTube, Google, etc.)
+          cat << 'EOF' > android/app/src/main/java/com/nova/browser/MainActivity.java
+          package com.nova.browser;
+
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.graphics.Color;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.inputmethod.EditorInfo;
+          import android.view.inputmethod.InputMethodManager;
+          import android.webkit.CookieManager;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.ProgressBar;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+              private EditText urlInput;
+              private ProgressBar progressBar;
+              private FrameLayout fullscreenContainer;
+              private View customView;
+              private WebChromeClient.CustomViewCallback customViewCallback;
+              private static final String HOME_URL = "file:///android_asset/www/index.html";
+
+              private int dp(int v) {
+                  return (int) (v * getResources().getDisplayMetrics().density);
+              }
+
+              private Button crearBoton(String texto, int bgColor, int textColor, int anchoDp) {
+                  Button b = new Button(this);
+                  b.setText(texto);
+                  b.setTextColor(textColor);
+                  b.setTextSize(14);
+                  b.setPadding(0, 0, 0, 0);
+                  GradientDrawable shape = new GradientDrawable();
+                  shape.setCornerRadius(dp(18));
+                  shape.setColor(bgColor);
+                  b.setBackground(shape);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(anchoDp), dp(38));
+                  lp.setMargins(dp(3), 0, dp(3), 0);
+                  b.setLayoutParams(lp);
+                  return b;
+              }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  FrameLayout rootWrapper = new FrameLayout(this);
+
+                  LinearLayout mainLayout = new LinearLayout(this);
+                  mainLayout.setOrientation(LinearLayout.VERTICAL);
+                  mainLayout.setBackgroundColor(Color.parseColor("#11111b"));
+
+                  // Barra de navegacion superior
+                  LinearLayout toolbar = new LinearLayout(this);
+                  toolbar.setOrientation(LinearLayout.HORIZONTAL);
+                  toolbar.setGravity(Gravity.CENTER_VERTICAL);
+                  toolbar.setBackgroundColor(Color.parseColor("#181825"));
+                  toolbar.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+                  Button backBtn = crearBoton("←", Color.parseColor("#313244"), Color.WHITE, 38);
+                  Button fwdBtn = crearBoton("→", Color.parseColor("#313244"), Color.WHITE, 38);
+                  Button homeBtn = crearBoton("🏠", Color.parseColor("#313244"), Color.WHITE, 38);
+
+                  urlInput = new EditText(this);
+                  urlInput.setHint("Buscar o escribir URL...");
+                  urlInput.setHintTextColor(Color.parseColor("#6c7086"));
+                  urlInput.setTextColor(Color.WHITE);
+                  urlInput.setSingleLine(true);
+                  urlInput.setTextSize(14);
+                  urlInput.setImeOptions(EditorInfo.IME_ACTION_GO);
+                  GradientDrawable urlBg = new GradientDrawable();
+                  urlBg.setCornerRadius(dp(18));
+                  urlBg.setColor(Color.parseColor("#1e1e2e"));
+                  urlBg.setStroke(dp(1), Color.parseColor("#45475a"));
+                  urlInput.setBackground(urlBg);
+                  urlInput.setPadding(dp(14), 0, dp(14), 0);
+                  LinearLayout.LayoutParams urlParams = new LinearLayout.LayoutParams(0, dp(38), 1f);
+                  urlParams.setMargins(dp(4), 0, dp(4), 0);
+                  urlInput.setLayoutParams(urlParams);
+
+                  Button goBtn = crearBoton("Ir", Color.parseColor("#89b4fa"), Color.parseColor("#11111b"), 46);
+
+                  toolbar.addView(backBtn);
+                  toolbar.addView(fwdBtn);
+                  toolbar.addView(homeBtn);
+                  toolbar.addView(urlInput);
+                  toolbar.addView(goBtn);
+
+                  // Barra de progreso de carga
+                  progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                  progressBar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
+                  progressBar.setMax(100);
+
+                  // Motor WebView real de Android (sin iframes)
+                  webView = new WebView(this);
+                  webView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+                  WebSettings s = webView.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setDatabaseEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setLoadWithOverviewMode(true);
+                  s.setUseWideViewPort(true);
+                  s.setBuiltInZoomControls(true);
+                  s.setDisplayZoomControls(false);
+                  s.setSupportMultipleWindows(false);
+                  s.setAllowFileAccess(true);
+                  s.setAllowContentAccess(true);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  // User-Agent compatible con YouTube Desktop/Tablet en BlueStacks
+                  s.setUserAgentString("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36");
+
+                  CookieManager cm = CookieManager.getInstance();
+                  cm.setAcceptCookie(true);
+                  cm.setAcceptThirdPartyCookies(webView, true);
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          String u = request.getUrl().toString();
+                          if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("file://")) {
+                              return false; // Lo abre directamente dentro de NOVA Browser
+                          }
+                          return true;
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          if (url.startsWith("file://")) {
+                              urlInput.setText("");
+                          } else {
+                              urlInput.setText(url);
+                          }
+                      }
+                  });
+
+                  // Soporte para reproduccion de video y pantalla completa en YouTube
+                  fullscreenContainer = new FrameLayout(this);
+                  fullscreenContainer.setBackgroundColor(Color.BLACK);
+                  fullscreenContainer.setVisibility(View.GONE);
+
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onProgressChanged(WebView view, int newProgress) {
+                          progressBar.setProgress(newProgress);
+                          progressBar.setVisibility(newProgress == 100 ? View.GONE : View.VISIBLE);
+                      }
+
+                      @Override
+                      public void onShowCustomView(View view, CustomViewCallback callback) {
+                          customView = view;
+                          customViewCallback = callback;
+                          fullscreenContainer.addView(view);
+                          fullscreenContainer.setVisibility(View.VISIBLE);
+                          mainLayout.setVisibility(View.GONE);
+                      }
+
+                      @Override
+                      public void onHideCustomView() {
+                          if (customView != null) {
+                              fullscreenContainer.removeView(customView);
+                              customView = null;
+                          }
+                          fullscreenContainer.setVisibility(View.GONE);
+                          mainLayout.setVisibility(View.VISIBLE);
+                          if (customViewCallback != null) customViewCallback.onCustomViewHidden();
+                      }
+                  });
+
+                  backBtn.setOnClickListener(v -> { if (webView.canGoBack()) webView.goBack(); });
+                  fwdBtn.setOnClickListener(v -> { if (webView.canGoForward()) webView.goForward(); });
+                  homeBtn.setOnClickListener(v -> webView.loadUrl(HOME_URL));
+                  goBtn.setOnClickListener(v -> navegar(urlInput.getText().toString()));
+
+                  urlInput.setOnEditorActionListener((v, actionId, event) -> {
+                      if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE ||
+                          (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                          navegar(urlInput.getText().toString());
+                          return true;
+                      }
+                      return false;
+                  });
+
+                  mainLayout.addView(toolbar);
+                  mainLayout.addView(progressBar);
+                  mainLayout.addView(webView);
+
+                  rootWrapper.addView(mainLayout);
+                  rootWrapper.addView(fullscreenContainer);
+                  setContentView(rootWrapper);
+
+                  // Cargar el archivo HTML de inicio al abrir la app
+                  webView.loadUrl(HOME_URL);
+              }
+
+              private void navegar(String texto) {
+                  String q = texto.trim();
+                  if (q.isEmpty()) return;
+                  String destino;
+                  if (q.startsWith("http://") || q.startsWith("https://") || q.startsWith("file://")) {
+                      destino = q;
+                  } else if (q.contains(".") && !q.contains(" ")) {
+                      destino = "https://" + q;
+                  } else {
+                      destino = "https://www.google.com/search?q=" + android.net.Uri.encode(q);
+                  }
+                  InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                  if (imm != null) imm.hideSoftInputFromWindow(urlInput.getWindowToken(), 0);
+                  webView.loadUrl(destino);
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (customView != null) {
+                      webView.getWebChromeClient().onHideCustomView();
+                  } else if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
 
       - name: Accept Android Licenses and Build APK
         working-directory: ./android
